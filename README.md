@@ -1,5 +1,7 @@
 # Azure MCP Agent
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
 A web-based chat interface for the [Microsoft Azure MCP server](https://github.com/Azure/azure-mcp).
 Ask natural-language questions about your Azure resources — the agent routes them through Claude to 61 Azure tools covering VMs, storage, policy, Key Vault, AKS, databases, and more.
 
