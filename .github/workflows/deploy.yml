@@ -20,8 +20,7 @@ permissions:
   contents: read
 
 # ── Configurable values ────────────────────────────────────────────────────────
-# Change these to match your preferred resource names / regions.
-# APP_NAME drives all resource names in main.bicep (ACR, Container App, SWA…).
+# APP_NAME drives all resource names in the Bicep templates.
 env:
   APP_NAME: azuremcpagent
   RESOURCE_GROUP: rg-azure-mcp-agent
@@ -37,8 +36,6 @@ jobs:
       # ── Checkout ─────────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
 
-      # Use the first 12 characters of the commit SHA as the image tag so each
-      # deployment is traceable to a specific commit.
       - name: Set image tag
         id: tag
         run: echo "value=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
@@ -51,7 +48,10 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # ── Infrastructure (Bicep) ────────────────────────────────────────────────
+      # ── Infrastructure (ACR, Container Apps env, SWA) ─────────────────────────
+      # Deploy stable resources that do not depend on the Docker image.
+      # The Container App is intentionally excluded here and deployed below,
+      # after the image has been built and pushed.
       - name: Ensure resource group exists
         run: |
           az group create \
@@ -59,38 +59,65 @@ jobs:
             --location "$LOCATION" \
             --output none
 
-      # First pass: deploy all infrastructure.  On the very first run the
-      # Container App will briefly fail to pull its image (the image doesn't
-      # exist in ACR yet); the ARM deployment still succeeds and the Container
-      # App is healthy after the image push + update steps below.
       - name: Deploy infrastructure
         id: infra
         run: |
           OUTPUT=$(az deployment group create \
             --resource-group "$RESOURCE_GROUP" \
-            --template-file deploy/main.bicep \
+            --template-file deploy/infra.bicep \
             --parameters \
                 appName="$APP_NAME" \
                 location="$LOCATION" \
                 swaLocation="$SWA_LOCATION" \
-                anthropicApiKey="${{ secrets.ANTHROPIC_API_KEY }}" \
-                imageTag="${{ steps.tag.outputs.value }}" \
             --output json)
 
-          echo "api_url=$(echo "$OUTPUT"    | jq -r '.properties.outputs.apiUrl.value')"           >> "$GITHUB_OUTPUT"
-          echo "acr_server=$(echo "$OUTPUT" | jq -r '.properties.outputs.acrLoginServer.value')"   >> "$GITHUB_OUTPUT"
-          echo "swa_hostname=$(echo "$OUTPUT" | jq -r '.properties.outputs.swaHostname.value')"    >> "$GITHUB_OUTPUT"
-          echo "identity_id=$(echo "$OUTPUT" | jq -r '.properties.outputs.identityPrincipalId.value')" >> "$GITHUB_OUTPUT"
+          echo "acr_server=$(echo "$OUTPUT" | jq -r '.properties.outputs.acrLoginServer.value')" >> "$GITHUB_OUTPUT"
+          echo "swa_hostname=$(echo "$OUTPUT" | jq -r '.properties.outputs.swaHostname.value')"  >> "$GITHUB_OUTPUT"
 
-      # Assign the Container App's managed identity the roles it needs to read
-      # Azure resources.  Using az CLI here avoids a subscription-scoped Bicep
-      # module deployment, which would require extra permissions on the SP.
-      # "|| true" makes the step idempotent — the command fails if the assignment
-      # already exists, which is harmless.
+      # ── Backend image ─────────────────────────────────────────────────────────
+      - name: Build and push backend image
+        env:
+          ACR_SERVER: ${{ steps.infra.outputs.acr_server }}
+          IMAGE_TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          az acr login --name "${APP_NAME}acr"
+
+          # frontend/dist is excluded from the image when deploying to Azure
+          # (the frontend goes to SWA); create an empty dir so the Dockerfile
+          # COPY succeeds.
+          mkdir -p frontend/dist
+
+          docker build \
+            --tag "$ACR_SERVER/azure-mcp-agent:$IMAGE_TAG" \
+            --file Dockerfile \
+            .
+          docker push "$ACR_SERVER/azure-mcp-agent:$IMAGE_TAG"
+
+      # ── Container App ─────────────────────────────────────────────────────────
+      # Deploy (or update) the Container App now that the image exists in ACR.
+      - name: Deploy Container App
+        id: app
+        run: |
+          OUTPUT=$(az deployment group create \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file deploy/container-app.bicep \
+            --parameters \
+                appName="$APP_NAME" \
+                location="$LOCATION" \
+                imageTag="${{ steps.tag.outputs.value }}" \
+                anthropicApiKey="${{ secrets.ANTHROPIC_API_KEY }}" \
+            --output json)
+
+          echo "api_url=$(echo "$OUTPUT"      | jq -r '.properties.outputs.apiUrl.value')"           >> "$GITHUB_OUTPUT"
+          echo "identity_id=$(echo "$OUTPUT"  | jq -r '.properties.outputs.identityPrincipalId.value')" >> "$GITHUB_OUTPUT"
+
+      # Assign Reader + Policy Insights Data Reader to the managed identity.
+      # "|| true" makes this idempotent — az role assignment create fails if the
+      # assignment already exists, which is harmless.
       - name: Assign roles to managed identity
         run: |
           SUBSCRIPTION_ID=$(az account show --query id -o tsv)
-          PRINCIPAL_ID="${{ steps.infra.outputs.identity_id }}"
+          PRINCIPAL_ID="${{ steps.app.outputs.identity_id }}"
           SCOPE="/subscriptions/$SUBSCRIPTION_ID"
 
           az role assignment create \
@@ -107,39 +134,6 @@ jobs:
             --scope "$SCOPE" \
             --output none || true
 
-      # ── Backend image ─────────────────────────────────────────────────────────
-      - name: Build and push backend image
-        env:
-          ACR_SERVER: ${{ steps.infra.outputs.acr_server }}
-          IMAGE_TAG: ${{ steps.tag.outputs.value }}
-        run: |
-          az acr login --name "${APP_NAME}acr"
-
-          # Ensure frontend/dist exists so the Dockerfile COPY doesn't fail.
-          # In this deployment the frontend goes to SWA so the directory is empty.
-          mkdir -p frontend/dist
-
-          docker build \
-            --tag "$ACR_SERVER/azure-mcp-agent:$IMAGE_TAG" \
-            --file Dockerfile \
-            .
-          docker push "$ACR_SERVER/azure-mcp-agent:$IMAGE_TAG"
-
-      # Update the Container App to use the image we just pushed.
-      # This creates a new revision and replaces any failed revision from the
-      # first Bicep pass (when the image did not yet exist in ACR).
-      - name: Update Container App image
-        env:
-          ACR_SERVER: ${{ steps.infra.outputs.acr_server }}
-          IMAGE_TAG: ${{ steps.tag.outputs.value }}
-        run: |
-          az containerapp update \
-            --name "${APP_NAME}-api" \
-            --resource-group "$RESOURCE_GROUP" \
-            --container-name backend \
-            --image "$ACR_SERVER/azure-mcp-agent:$IMAGE_TAG" \
-            --output none
-
       # ── Frontend ──────────────────────────────────────────────────────────────
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -148,11 +142,9 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      # Build the React app pointing at the Container App API URL.
-      # VITE_API_BASE_URL is baked into the bundle at build time.
       - name: Build frontend
         env:
-          VITE_API_BASE_URL: ${{ steps.infra.outputs.api_url }}
+          VITE_API_BASE_URL: ${{ steps.app.outputs.api_url }}
         run: |
           npm --prefix frontend ci
           npm --prefix frontend run build
@@ -175,19 +167,17 @@ jobs:
             --env production
 
       # ── CORS update ───────────────────────────────────────────────────────────
-      # Second Bicep pass: now that we know the SWA hostname, add it to the
-      # backend's ALLOWED_ORIGINS so the browser can reach the API cross-origin.
+      # Redeploy the Container App with the SWA URL added to ALLOWED_ORIGINS.
       - name: Update backend CORS with SWA URL
         run: |
           az deployment group create \
             --resource-group "$RESOURCE_GROUP" \
-            --template-file deploy/main.bicep \
+            --template-file deploy/container-app.bicep \
             --parameters \
                 appName="$APP_NAME" \
                 location="$LOCATION" \
-                swaLocation="$SWA_LOCATION" \
-                anthropicApiKey="${{ secrets.ANTHROPIC_API_KEY }}" \
                 imageTag="${{ steps.tag.outputs.value }}" \
+                anthropicApiKey="${{ secrets.ANTHROPIC_API_KEY }}" \
                 allowedOrigins="https://${{ steps.infra.outputs.swa_hostname }}" \
             --output none
 
@@ -201,7 +191,7 @@ jobs:
             echo "| | URL |"
             echo "|---|---|"
             echo "| **Frontend** | https://${{ steps.infra.outputs.swa_hostname }} |"
-            echo "| **Backend API** | ${{ steps.infra.outputs.api_url }} |"
+            echo "| **Backend API** | ${{ steps.app.outputs.api_url }} |"
             echo ""
             echo "**Image tag:** \`${{ steps.tag.outputs.value }}\`"
             echo ""
