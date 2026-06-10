@@ -84,7 +84,31 @@ class MCPBridge:
             fake_az_path = os.path.join(_fake_az_dir.name, "az")
             token_proxy.write_fake_az_script(fake_az_path)
             log.info("Fake az script written to %s", fake_az_path)
-        await self._connect()
+
+        if config.MCP_TRANSPORT == "http":
+            # The sidecar starts concurrently and may not be ready yet.
+            # Retry for up to ~30 s; if still failing let the app bind to its
+            # port anyway — call_tool() and list_tools() will reconnect on use.
+            max_attempts = 10
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    await self._connect()
+                    return
+                except Exception as exc:
+                    if attempt < max_attempts:
+                        log.warning(
+                            "MCP connect attempt %d/%d failed: %s — retrying in 3 s",
+                            attempt, max_attempts, exc,
+                        )
+                        await asyncio.sleep(3)
+                    else:
+                        log.error(
+                            "MCP connect failed after %d attempts — "
+                            "app will start; retrying on first request",
+                            max_attempts,
+                        )
+        else:
+            await self._connect()
 
     async def stop(self) -> None:
         """Tear down the MCP session and release resources."""
@@ -156,7 +180,12 @@ class MCPBridge:
         )
 
     async def list_tools(self) -> list[Tool]:
-        """Return the cached tool list."""
+        """Return the cached tool list, connecting lazily if needed."""
+        if self._session is None:
+            try:
+                await self._connect()
+            except Exception as exc:
+                log.warning("list_tools: MCP not connected: %s", exc)
         return self._tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
