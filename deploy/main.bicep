@@ -22,7 +22,7 @@ param location string = resourceGroup().location
 // Static Web Apps is only available in a handful of regions; use the closest.
 // https://learn.microsoft.com/azure/static-web-apps/quotas
 @description('Region for the Static Web App (must support SWA).')
-param swaLocation string = 'eastus2'
+param swaLocation string = 'westus2'
 
 @description('Anthropic API key stored as a Container App secret.')
 @secure()
@@ -44,11 +44,6 @@ var swaName = '${appName}-swa'
 
 // The sidecar listens on this port in HTTP transport mode.
 var mcpSidecarPort = '5008'
-
-// Reader role — lets the MI inspect all subscription resources.
-var readerRoleId = 'acdd72a7-3385-48ef-bd42-f606fba81ae7'
-// Policy Insights Data Reader — lets the MI read policy compliance data.
-var policyInsightsRoleId = '66bb4e9e-b016-4a94-8249-4c0511c2be84'
 
 // ── Container Registry ────────────────────────────────────────────────────────
 
@@ -163,27 +158,16 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
 }
 
 // ── Role assignments for the managed identity ─────────────────────────────────
-// Assign roles at subscription scope so the MI can read resources across all
-// resource groups.  Add Contributor or more specific roles if you need write
-// operations (e.g. policy remediation requires Resource Policy Contributor).
+// Subscription-scoped resources must live in a separate module.
+// Add Contributor or more specific roles if you need write operations
+// (e.g. policy remediation requires Resource Policy Contributor).
 
-resource readerAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(subscription().id, containerApp.id, readerRoleId)
+module roleAssignments 'modules/role-assignments.bicep' = {
+  name: 'roleAssignments'
   scope: subscription()
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', readerRoleId)
+  params: {
     principalId: containerApp.identity.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-resource policyInsightsAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(subscription().id, containerApp.id, policyInsightsRoleId)
-  scope: subscription()
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', policyInsightsRoleId)
-    principalId: containerApp.identity.principalId
-    principalType: 'ServicePrincipal'
+    containerAppId: containerApp.id
   }
 }
 
