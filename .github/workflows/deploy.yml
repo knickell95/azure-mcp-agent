@@ -59,18 +59,6 @@ jobs:
             --location "$LOCATION" \
             --output none
 
-      # Register resource providers the template needs.  This is a no-op on
-      # subsequent runs and takes only a few seconds when already registered.
-      - name: Register resource providers
-        run: |
-          for ns in \
-            Microsoft.App \
-            Microsoft.ContainerRegistry \
-            Microsoft.OperationalInsights \
-            Microsoft.Web; do
-            az provider register --namespace "$ns" --wait --output none
-          done
-
       # First pass: deploy all infrastructure.  On the very first run the
       # Container App will briefly fail to pull its image (the image doesn't
       # exist in ACR yet); the ARM deployment still succeeds and the Container
