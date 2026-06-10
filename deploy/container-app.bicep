@@ -93,16 +93,17 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
         {
           name: 'azure-mcp'
           image: 'mcr.microsoft.com/azure-sdk/azure-mcp:latest'
-          // No --outgoing-auth-strategy needed: the default DefaultAzureCredential chain
-          // automatically picks up the Container App's system-assigned managed identity
-          // via the IDENTITY_ENDPOINT/IDENTITY_HEADER endpoints set by the platform.
+          // UseHostingEnvironmentIdentity: use the Container App managed identity for Azure API calls.
           // --dangerously-disable-http-incoming-auth: safe because the sidecar is only
           //   reachable over localhost within the same Container App replica.
-          args: [ '--transport', 'http', '--dangerously-disable-http-incoming-auth' ]
+          args: [ '--transport', 'http', '--outgoing-auth-strategy', 'UseHostingEnvironmentIdentity', '--dangerously-disable-http-incoming-auth' ]
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
-            { name: 'AZURE_SUBSCRIPTION_ID',                    value: subscription().subscriptionId }
-            { name: 'AZURE_MCP_INCLUDE_PRODUCTION_CREDENTIALS', value: 'true' }
+            { name: 'AZURE_SUBSCRIPTION_ID',  value: subscription().subscriptionId }
+            // "prod" activates the managed identity credential chain in the microsoft/mcp container.
+            // Without this, the server uses a developer chain (CLI, VS Code, etc.) and ignores
+            // the UseHostingEnvironmentIdentity auth strategy.
+            { name: 'AZURE_TOKEN_CREDENTIALS', value: 'prod' }
           ]
         }
       ]
