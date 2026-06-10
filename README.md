@@ -165,7 +165,8 @@ TENANT_ID=$(az account show --query tenantId -o tsv)
 APP_ID=$(az ad app create --display-name "github-azure-mcp-agent" --query appId -o tsv)
 az ad sp create --id "$APP_ID"
 
-# 2. Federated credential — allows pushes to main to authenticate
+# 2. Federated credential — covers both push-to-main and workflow_dispatch
+#    (both trigger types produce the same OIDC subject claim)
 az ad app federated-credential create --id "$APP_ID" --parameters "{
   \"name\": \"github-main\",
   \"issuer\": \"https://token.actions.githubusercontent.com\",
@@ -173,16 +174,8 @@ az ad app federated-credential create --id "$APP_ID" --parameters "{
   \"audiences\": [\"api://AzureADTokenExchange\"]
 }"
 
-# 3. Federated credential — allows manual (workflow_dispatch) runs
-az ad app federated-credential create --id "$APP_ID" --parameters "{
-  \"name\": \"github-dispatch\",
-  \"issuer\": \"https://token.actions.githubusercontent.com\",
-  \"subject\": \"repo:${REPO}:ref:refs/heads/main\",
-  \"audiences\": [\"api://AzureADTokenExchange\"]
-}"
-
 # 4. Create the resource group and grant the SP Contributor access to it
-az group create --name rg-azure-mcp-agent --location eastus
+az group create --name rg-azure-mcp-agent --location westus2
 az role assignment create \
   --assignee "$APP_ID" \
   --role Contributor \
