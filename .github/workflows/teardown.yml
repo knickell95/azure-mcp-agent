@@ -1,0 +1,50 @@
+name: Teardown Azure Resources
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "yes" to confirm deletion of all Azure resources'
+        required: true
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: rg-azure-mcp-agent
+
+jobs:
+  teardown:
+    name: Delete Azure Resources
+    runs-on: ubuntu-latest
+    # Hard gate: job does not start unless the user typed "yes"
+    if: github.event.inputs.confirm == 'yes'
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete resource group
+        run: |
+          az group delete \
+            --name "$RESOURCE_GROUP" \
+            --yes \
+            --no-wait
+          echo "Deletion of '$RESOURCE_GROUP' initiated (running in background)."
+
+      - name: Write job summary
+        run: |
+          {
+            echo "## Teardown initiated"
+            echo ""
+            echo "Resource group **\`$RESOURCE_GROUP\`** is being deleted."
+            echo ""
+            echo "> Deletion runs asynchronously. Check the Azure portal to confirm"
+            echo "> all resources have been removed before redeploying."
+          } >> "$GITHUB_STEP_SUMMARY"
