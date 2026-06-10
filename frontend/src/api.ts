@@ -1,9 +1,15 @@
 import type { MCPTool, Message, SSEEvent } from './types'
 
+// When deployed to Azure Static Web Apps the frontend and backend are on
+// separate origins.  Set VITE_API_BASE_URL at build time to the Container App
+// URL (e.g. https://myapi.azurecontainerapps.io).  Leave unset for local dev
+// or when the backend serves the frontend from the same origin.
+const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? ''
+
 // ---- Tool catalogue ----
 
 export async function fetchTools(): Promise<MCPTool[]> {
-  const res = await fetch('/api/tools')
+  const res = await fetch(`${API_BASE}/api/tools`)
   if (!res.ok) throw new Error(`GET /api/tools failed: ${res.status}`)
   return res.json()
 }
@@ -14,7 +20,7 @@ export async function callTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ isError: boolean; content: string }> {
-  const res = await fetch('/api/tool/call', {
+  const res = await fetch(`${API_BASE}/api/tool/call`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, arguments: args }),
@@ -38,7 +44,7 @@ export async function streamChat(
   onEvent: (e: SSEEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch('/api/chat', {
+  const res = await fetch(`${API_BASE}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages, user_message: userMessage }),

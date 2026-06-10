@@ -20,6 +20,17 @@ AZ_LOGIN_MODE: bool = not bool(AZURE_CLIENT_SECRET)
 
 MCP_IMAGE: str = os.environ.get("MCP_IMAGE", "mcr.microsoft.com/azure-sdk/azure-mcp:latest")
 
+# MCP transport: "stdio" (local Docker subprocess) or "http" (sidecar/remote)
+MCP_TRANSPORT: str = os.environ.get("MCP_TRANSPORT", "stdio")
+MCP_HTTP_URL: str = os.environ.get("MCP_HTTP_URL", "http://localhost:5008")
+
+# CORS allowed origins — comma-separated list
+_origins_raw = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173",
+)
+ALLOWED_ORIGINS: list[str] = [o.strip() for o in _origins_raw.split(",") if o.strip()]
+
 
 def _az_account() -> dict:
     """Return parsed output of `az account show`. Cached after first call."""
