@@ -101,7 +101,8 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
           args: [ '--transport', 'http', '--dangerously-disable-http-incoming-auth' ]
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
-            { name: 'AZURE_SUBSCRIPTION_ID', value: subscription().subscriptionId }
+            { name: 'AZURE_SUBSCRIPTION_ID',                    value: subscription().subscriptionId }
+            { name: 'AZURE_MCP_INCLUDE_PRODUCTION_CREDENTIALS', value: 'true' }
           ]
         }
       ]
