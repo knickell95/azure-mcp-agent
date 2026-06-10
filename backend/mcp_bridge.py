@@ -26,6 +26,20 @@ from token_proxy import token_proxy
 log = logging.getLogger(__name__)
 
 _RECONNECT_ATTEMPTS = 3
+
+
+def _is_local_only(tool) -> bool:
+    """Return True for tools that only work in local/stdio mode.
+
+    azure-mcp marks these with a proprietary `localRequired: true` annotation.
+    These tools fail with 401/503 when the sidecar runs with managed identity
+    because they call services that require interactive / user-delegated auth.
+    """
+    if tool.annotations is not None:
+        extra = getattr(tool.annotations, "model_extra", None) or {}
+        if extra.get("localRequired"):
+            return True
+    return False
 _RECONNECT_DELAY = 2.0  # seconds
 _fake_az_dir: tempfile.TemporaryDirectory | None = None
 
@@ -148,7 +162,14 @@ class MCPBridge:
             await session.initialize()
 
             result = await session.list_tools()
-            self._tools = result.tools
+            tools = result.tools
+            if config.MCP_TRANSPORT == "http":
+                before = len(tools)
+                tools = [t for t in tools if not _is_local_only(t)]
+                filtered = before - len(tools)
+                if filtered:
+                    log.info("Filtered %d local-only tool(s) (not usable with managed identity)", filtered)
+            self._tools = tools
             self._session = session
             self._exit_stack = stack
             log.info("MCP bridge ready (%s) — %d tools available",

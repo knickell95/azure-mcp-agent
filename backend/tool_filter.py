@@ -25,7 +25,6 @@ BASELINE_TOOLS = {
     "subscription_list",
     "group_list",
     "group_resource_list",
-    "extension_cli_generate",
 }
 
 MAX_TOOLS = 20
