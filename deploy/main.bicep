@@ -157,20 +157,6 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
   }
 }
 
-// ── Role assignments for the managed identity ─────────────────────────────────
-// Subscription-scoped resources must live in a separate module.
-// Add Contributor or more specific roles if you need write operations
-// (e.g. policy remediation requires Resource Policy Contributor).
-
-module roleAssignments 'modules/role-assignments.bicep' = {
-  name: 'roleAssignments'
-  scope: subscription()
-  params: {
-    principalId: containerApp.identity.principalId
-    containerAppId: containerApp.id
-  }
-}
-
 // ── Static Web App ────────────────────────────────────────────────────────────
 
 resource swa 'Microsoft.Web/staticSites@2023-01-01' = {
