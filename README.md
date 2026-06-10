@@ -136,21 +136,135 @@ To use a **service principal** instead, set `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`
 
 ---
 
+## Deploying to Azure
+
+The backend runs as a **Container App** with the Azure MCP server as a sidecar container.
+The frontend is hosted on **Azure Static Web Apps** (free tier).
+A system-assigned **managed identity** on the Container App handles Azure authentication — no service principal needed.
+
+### Option A — GitHub Actions (recommended)
+
+Every push to `main` triggers `.github/workflows/deploy.yml`, which:
+1. Deploys Bicep infrastructure (ACR, Container Apps env, SWA).
+2. Builds and pushes the Docker image to ACR.
+3. Builds the React frontend with the Container App URL baked in.
+4. Deploys the frontend to Azure Static Web Apps.
+5. Updates the backend CORS policy to allow the SWA origin.
+
+#### One-time setup
+
+Run these commands once to create the OIDC identity GitHub Actions will use.
+Replace `OWNER/REPO` with your GitHub repository (e.g. `jsmith/azure-mcp-agent`).
+
+```bash
+REPO="OWNER/REPO"
+SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+TENANT_ID=$(az account show --query tenantId -o tsv)
+
+# 1. Create an app registration for GitHub Actions
+APP_ID=$(az ad app create --display-name "github-azure-mcp-agent" --query appId -o tsv)
+az ad sp create --id "$APP_ID"
+
+# 2. Federated credential — covers both push-to-main and workflow_dispatch
+#    (both trigger types produce the same OIDC subject claim)
+az ad app federated-credential create --id "$APP_ID" --parameters "{
+  \"name\": \"github-main\",
+  \"issuer\": \"https://token.actions.githubusercontent.com\",
+  \"subject\": \"repo:${REPO}:ref:refs/heads/main\",
+  \"audiences\": [\"api://AzureADTokenExchange\"]
+}"
+
+# 4. Create the resource group and grant the SP Contributor access to it
+az group create --name rg-azure-mcp-agent --location westus2
+az role assignment create \
+  --assignee "$APP_ID" \
+  --role Contributor \
+  --scope "/subscriptions/$SUBSCRIPTION_ID/resourceGroups/rg-azure-mcp-agent"
+
+# 5. Grant User Access Administrator at subscription scope so the workflow
+#    can create role assignments for the Container App managed identity
+az role assignment create \
+  --assignee "$APP_ID" \
+  --role "User Access Administrator" \
+  --scope "/subscriptions/$SUBSCRIPTION_ID"
+```
+
+Then add these **GitHub repository secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `AZURE_CLIENT_ID` | `$APP_ID` (the app registration client ID) |
+| `AZURE_TENANT_ID` | `$TENANT_ID` |
+| `AZURE_SUBSCRIPTION_ID` | `$SUBSCRIPTION_ID` |
+| `ANTHROPIC_API_KEY` | Your Anthropic API key |
+
+Push to `main` — the workflow runs automatically.
+
+---
+
+### Option B — manual deploy script
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+./deploy/deploy.sh [resource-group] [app-name] [location]
+# e.g. ./deploy/deploy.sh rg-azure-mcp-agent azuremcpagent eastus
+```
+
+Prerequisites: Azure CLI (`az login`), Docker, `jq`.
+
+The script runs in two passes:
+1. Deploys infrastructure, builds and pushes the backend image, builds and deploys the frontend.
+2. Re-runs the Bicep deployment to add the SWA URL to the backend CORS allow-list.
+
+After deployment the script prints the frontend and backend URLs.
+
+### Architecture in Azure
+
+```
+Browser  →  Azure Static Web App (React)
+         →  Container App (FastAPI backend)
+               └─ Sidecar: azure-mcp (HTTP transport, localhost:5008)
+                  └─ Auth: system-assigned managed identity
+```
+
+The backend connects to the Azure MCP sidecar via `http://localhost:5008` (HTTP transport) — no Docker socket or token proxy needed. Container Apps injects the managed identity credential endpoint into both containers automatically.
+
+### Role assignments
+
+The deployment assigns **Reader** and **Policy Insights Data Reader** at subscription scope to the managed identity. For write operations (e.g. policy remediation) you will need to add additional roles manually:
+
+```bash
+az role assignment create \
+  --assignee <identity-principal-id> \
+  --role "Resource Policy Contributor" \
+  --scope /subscriptions/<subscription-id>
+```
+
+The `identityPrincipalId` output from the Bicep deployment gives you the principal ID.
+
+---
+
 ## Project structure
 
 ```
 azure-mcp-agent/
 ├── .env                        # API keys and Azure config (gitignored)
+├── Dockerfile                  # Backend container image
+├── deploy/
+│   ├── main.bicep              # Infrastructure-as-code (ACR, Container Apps, SWA)
+│   ├── main.bicepparam         # Parameter defaults
+│   └── deploy.sh               # End-to-end deployment script
 ├── backend/
 │   ├── requirements.txt
 │   ├── main.py                 # FastAPI app, routes, lifespan
-│   ├── mcp_bridge.py           # Manages the Docker subprocess + MCP session
-│   ├── token_proxy.py          # Local MSI proxy for az login auth
+│   ├── mcp_bridge.py           # MCP session (stdio for local, HTTP for Azure)
+│   ├── token_proxy.py          # Local token proxy for az login auth (stdio mode)
 │   ├── agent_loop.py           # Claude tool-use loop, SSE event generator
 │   ├── tool_filter.py          # Selects relevant tools per request (reduces tokens)
 │   ├── models.py               # Pydantic request/response models
 │   └── config.py               # Env var loading
 └── frontend/
+    ├── staticwebapp.config.json  # Azure Static Web Apps routing
     ├── src/
     │   ├── App.tsx             # Root layout (sidebar + chat)
     │   ├── api.ts              # fetch wrappers + SSE stream parser

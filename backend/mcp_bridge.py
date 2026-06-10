@@ -1,15 +1,23 @@
 """
-MCPBridge — singleton that owns the docker subprocess running the Azure MCP server
-and exposes async list_tools() / call_tool() methods to the rest of the app.
+MCPBridge — singleton that owns the MCP server connection and exposes
+async list_tools() / call_tool() methods to the rest of the app.
+
+Two transport modes are supported:
+  stdio  — spawns the Azure MCP Docker container as a subprocess (local dev)
+  http   — connects to an Azure MCP sidecar via HTTP (Azure Container Apps)
+
+Select the mode with the MCP_TRANSPORT env var (default: "stdio").
 """
 import asyncio
 import logging
 import os
 import tempfile
+from contextlib import AsyncExitStack
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import Tool
 
 import config
@@ -23,10 +31,9 @@ _fake_az_dir: tempfile.TemporaryDirectory | None = None
 
 
 def _build_docker_args() -> list[str]:
-    """Build the docker run argument list for the Azure MCP container."""
+    """Build the docker run argument list for the Azure MCP container (stdio mode only)."""
     args = [
         "run", "--rm", "-i",
-        # Never allocate a TTY — it corrupts the JSON-RPC framing
         # Allow container to reach host services (token proxy, etc.)
         "--add-host=host.docker.internal:host-gateway",
     ]
@@ -58,7 +65,7 @@ def _build_docker_args() -> list[str]:
 
 class MCPBridge:
     """
-    Maintains a single MCP ClientSession backed by a docker subprocess.
+    Maintains a single MCP ClientSession and exposes tool operations.
     Thread-safe for concurrent async callers via an asyncio.Lock.
     """
 
@@ -66,12 +73,12 @@ class MCPBridge:
         self._lock = asyncio.Lock()
         self._session: ClientSession | None = None
         self._tools: list[Tool] = []
-        self._exit_stack_cm = None  # holds the stdio_client context manager
+        self._exit_stack: AsyncExitStack | None = None
 
     async def start(self) -> None:
         """Initialize the MCP session. Call once at server startup."""
         global _fake_az_dir
-        if config.AZ_LOGIN_MODE:
+        if config.MCP_TRANSPORT == "stdio" and config.AZ_LOGIN_MODE:
             token_proxy.start()
             _fake_az_dir = tempfile.TemporaryDirectory(prefix="azure-mcp-fake-az-")
             fake_az_path = os.path.join(_fake_az_dir.name, "az")
@@ -80,45 +87,61 @@ class MCPBridge:
         await self._connect()
 
     async def stop(self) -> None:
-        """Tear down the MCP session and docker subprocess."""
-        if self._exit_stack_cm is not None:
+        """Tear down the MCP session and release resources."""
+        if self._exit_stack is not None:
             try:
-                await self._exit_stack_cm.__aexit__(None, None, None)
+                await self._exit_stack.aclose()
             except Exception:
                 pass
+            self._exit_stack = None
         self._session = None
-        self._exit_stack_cm = None
-        token_proxy.stop()
+        if config.MCP_TRANSPORT == "stdio":
+            token_proxy.stop()
         global _fake_az_dir
         if _fake_az_dir:
             _fake_az_dir.cleanup()
             _fake_az_dir = None
 
     async def _connect(self) -> None:
-        params = StdioServerParameters(
-            command="docker",
-            args=_build_docker_args(),
-        )
+        stack = AsyncExitStack()
+        await stack.__aenter__()
+        try:
+            if config.MCP_TRANSPORT == "http":
+                log.info("Connecting to Azure MCP server via HTTP at %s…", config.MCP_HTTP_URL)
+                read, write, _ = await stack.enter_async_context(
+                    streamablehttp_client(config.MCP_HTTP_URL)
+                )
+            else:
+                log.info("Launching Azure MCP container via Docker (stdio)…")
+                params = StdioServerParameters(
+                    command="docker",
+                    args=_build_docker_args(),
+                )
+                read, write = await stack.enter_async_context(stdio_client(params))
 
-        log.info("Launching Azure MCP container via docker...")
-        cm = stdio_client(params)
-        read, write = await cm.__aenter__()
-        self._exit_stack_cm = cm
+            session = await stack.enter_async_context(ClientSession(read, write))
+            log.info("Negotiating MCP protocol…")
+            await session.initialize()
 
-        session = ClientSession(read, write)
-        await session.__aenter__()
-
-        log.info("Negotiating MCP protocol...")
-        await session.initialize()
-
-        result = await session.list_tools()
-        self._tools = result.tools
-        self._session = session
-        log.info("MCP bridge ready — %d tools available", len(self._tools))
+            result = await session.list_tools()
+            self._tools = result.tools
+            self._session = session
+            self._exit_stack = stack
+            log.info("MCP bridge ready (%s) — %d tools available",
+                     config.MCP_TRANSPORT, len(self._tools))
+        except Exception:
+            await stack.aclose()
+            raise
 
     async def _reconnect(self) -> None:
-        log.warning("MCP subprocess lost — attempting reconnect...")
-        await self.stop()
+        log.warning("MCP connection lost — attempting reconnect…")
+        if self._exit_stack is not None:
+            try:
+                await self._exit_stack.aclose()
+            except Exception:
+                pass
+            self._exit_stack = None
+        self._session = None
         for attempt in range(1, _RECONNECT_ATTEMPTS + 1):
             try:
                 await self._connect()
@@ -128,15 +151,16 @@ class MCPBridge:
                 log.error("Reconnect attempt %d failed: %s", attempt, exc)
                 if attempt < _RECONNECT_ATTEMPTS:
                     await asyncio.sleep(_RECONNECT_DELAY)
-        raise RuntimeError("Failed to reconnect to Azure MCP container after "
-                           f"{_RECONNECT_ATTEMPTS} attempts")
+        raise RuntimeError(
+            f"Failed to reconnect to Azure MCP server after {_RECONNECT_ATTEMPTS} attempts"
+        )
 
     async def list_tools(self) -> list[Tool]:
         """Return the cached tool list."""
         return self._tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        """Invoke an MCP tool. Reconnects automatically on subprocess failure."""
+        """Invoke an MCP tool. Reconnects automatically on connection failure."""
         async with self._lock:
             for attempt in range(1, _RECONNECT_ATTEMPTS + 1):
                 try:
@@ -152,5 +176,5 @@ class MCPBridge:
                         raise
 
 
-# Module-level singleton — FastAPI stores this on app.state
+# Module-level singleton used by the FastAPI app
 bridge = MCPBridge()
