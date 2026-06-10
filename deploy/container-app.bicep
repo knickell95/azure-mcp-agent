@@ -25,6 +25,8 @@ param allowedOrigins string = ''
 var acrName          = '${replace(appName, '-', '')}acr'
 var envName          = '${appName}-env'
 var appContainerName = '${appName}-api'
+// Default HTTP port used by azmcp server start --transport http.
+// Must match MCP_HTTP_URL in the backend container's env.
 var mcpSidecarPort   = '5008'
 
 // ── References to resources created by infra.bicep ───────────────────────────
@@ -89,7 +91,10 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
         {
           name: 'azure-mcp'
           image: 'mcr.microsoft.com/azure-sdk/azure-mcp:latest'
-          args: [ 'server', 'start', '--transport', 'http', '--port', mcpSidecarPort ]
+          // --outgoing-auth-strategy: use the Container App managed identity for Azure API calls.
+          // --dangerously-disable-http-incoming-auth: safe here because the sidecar is only
+          //   reachable over localhost within the same Container App, never from outside.
+          args: [ 'server', 'start', '--transport', 'http', '--outgoing-auth-strategy', 'UseHostingEnvironmentIdentity', '--dangerously-disable-http-incoming-auth' ]
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
             { name: 'AZURE_SUBSCRIPTION_ID', value: subscription().subscriptionId }
