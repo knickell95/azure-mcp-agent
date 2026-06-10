@@ -5,6 +5,7 @@
 targetScope = 'resourceGroup'
 
 @description('Short name prefix — must match the value used in infra.bicep.')
+@minLength(2)
 param appName string = 'azuremcpagent'
 
 @description('Azure region — must match the value used in infra.bicep.')
@@ -32,6 +33,7 @@ var mcpSidecarPort   = '5008'
 // ── References to resources created by infra.bicep ───────────────────────────
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  #disable-next-line BCP334
   name: acrName
 }
 
@@ -94,7 +96,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
           // --outgoing-auth-strategy: use the Container App managed identity for Azure API calls.
           // --dangerously-disable-http-incoming-auth: safe here because the sidecar is only
           //   reachable over localhost within the same Container App, never from outside.
-          args: [ 'server', 'start', '--transport', 'http', '--outgoing-auth-strategy', 'UseHostingEnvironmentIdentity', '--dangerously-disable-http-incoming-auth' ]
+          args: [ '--transport', 'http', '--outgoing-auth-strategy', 'UseHostingEnvironmentIdentity', '--dangerously-disable-http-incoming-auth' ]
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
             { name: 'AZURE_SUBSCRIPTION_ID', value: subscription().subscriptionId }

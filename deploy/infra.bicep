@@ -4,6 +4,7 @@
 targetScope = 'resourceGroup'
 
 @description('Short name prefix used for all resources.')
+@minLength(2)
 param appName string = 'azuremcpagent'
 
 @description('Azure region for Container Apps and supporting resources.')
@@ -22,6 +23,7 @@ var swaName  = '${appName}-swa'
 // ── Container Registry ────────────────────────────────────────────────────────
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+  #disable-next-line BCP334
   name: acrName
   location: location
   sku: { name: 'Basic' }
