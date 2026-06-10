@@ -28,7 +28,7 @@ var envName          = '${appName}-env'
 var appContainerName = '${appName}-api'
 // Default HTTP port used by azmcp server start --transport http.
 // Must match MCP_HTTP_URL in the backend container's env.
-var mcpSidecarPort   = '5008'
+var mcpSidecarPort   = '5000'
 
 // ── References to resources created by infra.bicep ───────────────────────────
 
