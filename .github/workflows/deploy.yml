@@ -82,6 +82,31 @@ jobs:
           echo "swa_hostname=$(echo "$OUTPUT" | jq -r '.properties.outputs.swaHostname.value')"    >> "$GITHUB_OUTPUT"
           echo "identity_id=$(echo "$OUTPUT" | jq -r '.properties.outputs.identityPrincipalId.value')" >> "$GITHUB_OUTPUT"
 
+      # Assign the Container App's managed identity the roles it needs to read
+      # Azure resources.  Using az CLI here avoids a subscription-scoped Bicep
+      # module deployment, which would require extra permissions on the SP.
+      # "|| true" makes the step idempotent — the command fails if the assignment
+      # already exists, which is harmless.
+      - name: Assign roles to managed identity
+        run: |
+          SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+          PRINCIPAL_ID="${{ steps.infra.outputs.identity_id }}"
+          SCOPE="/subscriptions/$SUBSCRIPTION_ID"
+
+          az role assignment create \
+            --assignee-object-id "$PRINCIPAL_ID" \
+            --assignee-principal-type ServicePrincipal \
+            --role "Reader" \
+            --scope "$SCOPE" \
+            --output none || true
+
+          az role assignment create \
+            --assignee-object-id "$PRINCIPAL_ID" \
+            --assignee-principal-type ServicePrincipal \
+            --role "66bb4e9e-b016-4a94-8249-4c0511c2be84" \
+            --scope "$SCOPE" \
+            --output none || true
+
       # ── Backend image ─────────────────────────────────────────────────────────
       - name: Build and push backend image
         env:
