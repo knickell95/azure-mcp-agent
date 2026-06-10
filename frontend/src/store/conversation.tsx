@@ -43,6 +43,9 @@ function reducer(state: State, action: Action): State {
       const last = bubbles[bubbles.length - 1]
       if (last?.kind === 'text' && last.role === 'assistant') {
         bubbles[bubbles.length - 1] = { ...last, text: last.text + action.delta }
+      } else {
+        // Text arrived after a tool card — start a new assistant text bubble
+        bubbles.push({ kind: 'text', role: 'assistant', text: action.delta })
       }
       return { ...state, bubbles }
     }
