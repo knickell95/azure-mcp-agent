@@ -93,10 +93,12 @@ resource containerApp 'Microsoft.App/containerApps@2023-11-02-preview' = {
         {
           name: 'azure-mcp'
           image: 'mcr.microsoft.com/azure-sdk/azure-mcp:latest'
-          // --outgoing-auth-strategy: use the Container App managed identity for Azure API calls.
-          // --dangerously-disable-http-incoming-auth: safe here because the sidecar is only
-          //   reachable over localhost within the same Container App, never from outside.
-          args: [ '--transport', 'http', '--outgoing-auth-strategy', 'UseHostingEnvironmentIdentity', '--dangerously-disable-http-incoming-auth' ]
+          // No --outgoing-auth-strategy needed: the default DefaultAzureCredential chain
+          // automatically picks up the Container App's system-assigned managed identity
+          // via the IDENTITY_ENDPOINT/IDENTITY_HEADER endpoints set by the platform.
+          // --dangerously-disable-http-incoming-auth: safe because the sidecar is only
+          //   reachable over localhost within the same Container App replica.
+          args: [ '--transport', 'http', '--dangerously-disable-http-incoming-auth' ]
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
             { name: 'AZURE_SUBSCRIPTION_ID', value: subscription().subscriptionId }
